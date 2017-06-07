@@ -1478,6 +1478,9 @@ octets.
 This design ensures that a stateless reset packet is - to the extent possible -
 indistinguishable from a regular packet.
 
+A different stateless reset token is used for each connection ID that is used.
+The NEW_CONNECTION_ID includes a new token.
+
 
 ### Detecting a Stateless Reset
 
@@ -2122,6 +2125,14 @@ The NEW_CONNECTION_ID is as follows:
 +                        Connection ID (64)                     +
 |                                                               |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|                                                               |
++                                                               +
+|                                                               |
++                   Stateless Reset Token (128)                 +
+|                                                               |
++                                                               +
+|                                                               |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 ~~~
 
 The fields are:
@@ -2138,6 +2149,11 @@ Sequence:
 Connection ID:
 
 : A 64-bit connection ID.
+
+Stateless Reset Token:
+
+: A 128-bit value that replaces the token used for stateless reset
+  ({{stateless-reset}}).
 
 
 ## CONNECTION_CLOSE frame {#frame-connection-close}
