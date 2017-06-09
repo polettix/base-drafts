@@ -844,7 +844,7 @@ explained in more detail as they are referenced later in the document.
 | 0x08        | BLOCKED           | {{frame-blocked}}           |
 | 0x09        | STREAM_BLOCKED    | {{frame-stream-blocked}}    |
 | 0x0a        | STREAM_ID_NEEDED  | {{frame-stream-id-needed}}  |
-| 0x0b        | NEW_CONNECTION_ID | {{frame-new-connection-id}} |
+| 0x0c        | CLIENT_STATELESS_RESET_TOKEN | {{frame-client-stateless-reset}} |
 | 0xa0 - 0xbf | ACK               | {{frame-ack}}               |
 | 0xc0 - 0xff | STREAM            | {{frame-stream}}            |
 {: #frame-types title="Frame Types"}
@@ -1082,7 +1082,10 @@ idle_timeout (0x0003):
 stateless_reset_token (0x0005):
 
 : The Stateless Reset Token is used in verifying a stateless reset, see
-  {{stateless-reset}}.  This parameter is a sequence of 16 octets.
+  {{stateless-reset}}.  This parameter is a sequence of 16 octets.  This
+  parameter MUST NOT be used by the client, since the client transport
+  parameters are not encrypted and this value needs to be kept secret.  A client
+  can provide its own value by sending a CLIENT_STATELESS_RESET_TOKEN message.
 
 An endpoint MAY use the following transport parameters:
 
@@ -1421,19 +1424,21 @@ list.
 
 ## Stateless Reset {#stateless-reset}
 
+A stateless reset is provided as an option of last resort for an endpoint that
+does not have access to the state of a connection.  A crash or outage might
+result in peers continuing to send data to an endpoint that is unable to
+properly continue the connection.
 
-A stateless reset is provided as an option of last resort for a server that does
-not have access to the state of a connection.  A server crash or outage might
-result in clients continuing to send data to a server that is unable to properly
-continue the connection.  A server that wishes to communicate a fatal connection
-error MUST use a CONNECTION_CLOSE frame if it has sufficient state to do so.
+To support this process, each endpoint sends a stateless reset token to its
+peer.  A different stateless reset token is used for each connection ID that is
+used.  The server can send this value during the handshake in the transport
+parameters or in the NEW_CONNECTION_ID frame.  The client uses the
+CLIENT_STATELESS_RESET_TOKEN frame to provide its own token.  The stateless
+reset token is thereby protected by encryption, ensuring that only participating
+endpoints know the value.
 
-To support this process, the server sends a stateless_reset_token value during
-the handshake in the transport parameters.  This value is protected by
-encryption, so only client and server know this value.
-
-A server that receives packets that it cannot process sends a packet in the
-following layout:
+An endpoint that receives packets for a connection that it has no state for can
+send a packet in the following format:
 
 ~~~
  0                   1                   2                   3
@@ -1459,14 +1464,15 @@ following layout:
 
 This packet uses the short header form with the shortest possible packet number
 encoding.  This minimizes the perceived gap between the last packet that the
-server sent and this packet.  The leading octet of the Stateless Reset Token
-will be interpreted as a packet number.  A server MAY use a different short
-header type, indicating a different packet number length, but this allows for
-the message to be identified as a stateless reset more easily using heuristics.
+endpoint sent and this packet.  The leading octet of the Stateless Reset Token
+field will be interpreted as a packet number.  An endpoint MAY use a different
+short header type, indicating a different packet number length, but this allows
+for the message to be identified as a stateless reset more easily using
+heuristics.
 
-A server copies the connection ID field from the packet that triggers the
-stateless reset.  A server omits the connection ID if explicitly configured to
-do so, or if the client packet did not include a connection ID.
+An endpoint copies the connection ID field from the packet that triggers the
+stateless reset.  An endpoint omits the connection ID if explicitly configured
+to do so, or if the incoming packet did not include a connection ID.
 
 After the first short header octet and optional connection ID, the server
 includes the value of the Stateless Reset Token that it included in its
@@ -1485,17 +1491,16 @@ CONNECTION_CLOSE frame if it has sufficient state to do so.
 
 ### Detecting a Stateless Reset
 
-A client detects a potential stateless reset when a packet with a short header
-cannot be decrypted.  The client then performs a constant-time comparison of the
-16 octets that follow the Connection ID with the Stateless Reset Token provided
-by the server in its transport parameters.  If this comparison is successful,
-the connection MUST be terminated immediately.  Otherwise, the packet can be
-discarded.
+An endpoint detects a potential stateless reset when a packet with a short
+header cannot be decrypted.  The endpoint then performs a comparison of the 16
+octets that follow the Connection ID with the Stateless Reset Token provided by
+its peer.  If this comparison is successful, the connection MUST be terminated
+immediately.  Otherwise, the packet can be discarded.
 
 
 ### Calculating a Stateless Reset Token
 
-In order to create a Stateless Reset Token, a server could randomly generate
+In order to create a Stateless Reset Token, an endpoint could randomly generate
 {{!RFC4086}} a secret for every connection that it creates.  However, this
 presents a coordination problem when there are multiple servers in a cluster or
 a storage problem for a server that might lose state.  Stateless reset
@@ -1503,31 +1508,32 @@ specifically exists to handle the case where state is lost, so this approach is
 suboptimal.
 
 A single static key can be used across all connections to the same endpoint by
-generating the proof using a second iteration of a preimage-resistant function
-that takes three inputs: the static key, a the connection ID for the connection
-(see {{connection-id}}), and an identifier for the server instance.  A server
-could use HMAC {{?RFC2104}} (for example, HMAC(static_key, server_id ||
-connection_id)) or HKDF {{?RFC5869}} (for example, using the static key as input
-keying material, with server and connection identifiers as salt).  The output of
-this function is truncated to 16 octets to produce the Stateless Reset Token
-for that connection.
+generating the proof using a preimage-resistant function that takes three
+inputs: the static key, a the connection ID for the connection (see
+{{connection-id}}), and an identifier for the endpoint instance within its
+cluster.  An endpoint could use HMAC {{?RFC2104}} (for example, HMAC(static_key,
+server_id || connection_id)) or HKDF {{?RFC5869}} (for example, using the static
+key as input keying material, with instance and connection identifiers as salt).
+The output of this function is truncated to 16 octets to produce the Stateless
+Reset Token for that connection.
 
-A server that loses state can use the same method to generate a valid Stateless
-Reset Secret.  The connection ID comes from the packet that the server receives.
+An endpoint that loses state can use the same method to generate a valid
+Stateless Reset Secret.  The connection ID comes from the packet that it
+receives.
 
-This design relies on the client always sending a connection ID in its packets
-so that the server can use the connection ID from a packet to reset the
-connection.  A server that uses this design cannot allow clients to omit a
+This design relies on a peer always sending a connection ID in its packets
+so that the receiving endpoint can use the connection ID from a packet to reset the
+connection.  An endpoint that uses this design cannot allow peers to omit a
 connection ID (that is, it cannot use the truncate_connection_id transport
 parameter {{transport-parameter-definitions}}).
 
 Revealing the Stateless Reset Token allows any entity to terminate the
 connection, so a value can only be used once.  This method for choosing the
-Stateless Reset Token means that the combination of server instance, connection
-ID, and static key cannot occur for another connection.  A connection ID from a
-connection that is reset by revealing the Stateless Reset Token cannot be
-reused for new connections at the same server without first changing to use a
-different static key or server identifier.
+Stateless Reset Token means that the combination of instance, connection ID, and
+static key cannot occur for another connection.  A connection ID from a
+connection that is reset by revealing the Stateless Reset Token cannot be reused
+for new connections at the same endpoint without first changing to use a
+different static key or instance identifier.
 
 
 # Frame Types and Formats
@@ -2143,8 +2149,8 @@ Sequence:
 : A 16-bit sequence number.  This value starts at 0 and increases by 1 for each
   connection ID that is provided by the server.  The sequence value can wrap;
   the value 65535 is followed by 0.  When wrapping the sequence field, the
-  server MUST ensure that a value with the same sequence has been received and
-  acknowledged by the client.  The connection ID that is assigned during the
+  endpoint MUST ensure that a value with the same sequence has been received and
+  acknowledged by its peer.  The connection ID that is assigned during the
   handshake is assumed to have a sequence of 65535.
 
 Connection ID:
@@ -2155,6 +2161,48 @@ Stateless Reset Token:
 
 : A 128-bit value that replaces the token used for stateless reset
   ({{stateless-reset}}).
+
+
+## CLIENT_STATELESS_RESET_TOKEN Frame {#frame-client-stateless-reset}
+
+A client that wishes to enable a stateless reset ({{stateless-reset}}) sends
+this message at the start of a connection, and in response to receiving a
+NEW_CONNECTION_ID frame from the server.  This allows a client to associate its
+own stateless reset token with a particular connection ID.
+
+A client that does not wish to use the stateless reset facility is not required
+to send this frame.
+
+The CLIENT_STATELESS_RESET_TOKEN is as follows:
+
+~~~
+ 0                   1                   2                   3
+ 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|                                                               |
++                        Connection ID (64)                     +
+|                                                               |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|                                                               |
++                                                               +
+|                                                               |
++                   Stateless Reset Token (128)                 +
+|                                                               |
++                                                               +
+|                                                               |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+~~~
+
+The fields are:
+
+Connection ID:
+
+: The connection ID for which this stateless reset token is valid.
+
+Stateless Reset Token:
+
+: A 128-bit stateless reset token that the client will use when it receives
+  packets with this connection ID (see {{stateless-reset}}).
 
 
 ## CONNECTION_CLOSE frame {#frame-connection-close}
